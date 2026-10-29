@@ -390,3 +390,14 @@ p { margin: 0 0 1em; }
 @media (max-width: 600px) { .hero-stats { width: calc(100% - 32px); } }
 h1 { font-size: clamp(2.1rem, 9.2vw, 6rem); }
 @media (max-width: 640px) { .hero-media:empty::after { display: none; } h2 { font-size: clamp(1.8rem, 8vw, 3.4rem); } }
+
+/* 360° spin viewer */
+.spin { position: relative; aspect-ratio: 4/3; border-radius: var(--radius); overflow: hidden; background: #fff; border: 1px solid var(--line); cursor: grab; touch-action: pan-y; user-select: none; -webkit-user-select: none; outline: none; }
+.spin.is-drag { cursor: grabbing; }
+.spin:focus-visible { box-shadow: 0 0 0 3px var(--sky-300); }
+.spin img { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.spin-hint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); background: rgba(4,30,56,.78); color: #fff; font: 600 .74rem var(--font-body); letter-spacing: .04em; padding: 6px 12px; border-radius: 999px; pointer-events: none; transition: opacity .3s; white-space: nowrap; }
+.spin.is-drag .spin-hint { opacity: 0; }
+.spin-badge { position: absolute; top: 10px; left: 10px; z-index: 1; background: var(--accent); color: var(--accent-ink); font: 800 .7rem var(--font-head); font-stretch: 112%; letter-spacing: .06em; padding: 4px 9px; border-radius: 999px; pointer-events: none; box-shadow: 0 4px 12px rgba(4,30,56,.25); }
+.thumb-360 { width: 64px; height: 48px; border-radius: 6px; border: 2px solid transparent; background: var(--sky-800); color: var(--accent); font: 800 .8rem var(--font-head); cursor: pointer; }
+.thumb-360.is-on { border-color: var(--sky-500); }
