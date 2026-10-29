@@ -106,6 +106,7 @@
     restoreFolder();
     bindContent(true);
     setStatus();
+    if (!FS_OK) toast("This browser can't save into your SkyHighRigs folder, so Save will download a copy instead. Open index.html in Chrome (right-click → Open With → Google Chrome) to save directly.", true, 12000);
   }
   function exit() {
     if (ED.dirty && !confirm("You have unsaved changes. Exit the editor anyway? (They stay on the page until you reload.)")) return;
@@ -175,6 +176,9 @@
     document.body.appendChild(ui.root);
     ui.body = $("#shr-body");
     ui.status = $("#shr-status");
+    ui.status.style.cursor = "pointer";
+    ui.status.title = "Click to connect your SkyHighRigs folder";
+    ui.status.addEventListener("click", function () { if (!ED.dir) { if (ED.pendingHandle) reconnect(); else connectFolder(); } });
 
     ui.root.addEventListener("mousedown", function (e) {
       // keep text selection alive when clicking toolbar buttons
@@ -199,7 +203,7 @@
   }
   function setStatus(msg) {
     if (!ui.status) return;
-    ui.status.textContent = msg || (ED.dirty ? "● Unsaved changes" : ED.dir ? "✓ Saved · folder connected" : "Folder not connected");
+    ui.status.textContent = msg || (ED.dirty ? "● Unsaved changes" + (ED.dir ? "" : " · folder not connected") : ED.dir ? "✓ Saved · folder connected" : ED.pendingHandle ? "⚠ Click to reconnect folder" : "⚠ Click to connect folder");
     ui.status.classList.toggle("dirty", ED.dirty && !msg);
   }
 
@@ -1038,7 +1042,7 @@
     a.href = URL.createObjectURL(new Blob([html], { type: "text/html" }));
     a.download = "index.html";
     document.body.appendChild(a); a.click(); a.remove();
-    toast("Downloaded index.html. Replace the one in your SkyHighRigs folder with it.", false, 7000);
+    toast(FS_OK ? "Folder access wasn't allowed, so a copy was downloaded instead. Click “Connect folder” at the top, pick SkyHighRigs and press Allow, then Save again." : "Downloaded a copy (this browser can't write to folders). Use Chrome to save straight into SkyHighRigs.", true, 10000);
     markDirty(false);
   }
 
@@ -1172,6 +1176,10 @@
         });
         out += '<div class="shr-h">Photos</div><div class="shr-imgs">' + (it.images || []).map(function (s, k) { return '<div class="im"><img src="' + esc(previewSrc(s)) + '" alt=""><button data-act="inv-img-del" data-v="' + k + '" title="Remove">✕</button></div>'; }).join("") + "</div>" +
           '<div class="shr-drop" data-act="inv-img-add" data-invdrop>Drop a photo here (from the Media tab or your computer) or click to upload</div>';
+        var sp = it.spin || [];
+        out += '<div class="shr-h">360° spin <span>' + (sp.length ? sp.length + " frames" : "") + "</span></div>" +
+          (sp.length ? '<div class="shr-imgs">' + [0, Math.floor(sp.length / 4), Math.floor(sp.length / 2), Math.floor(sp.length * 3 / 4)].map(function (k) { return '<div class="im"><img src="' + esc(sp[k]) + '" alt=""></div>'; }).join("") + '</div><div class="shr-seg" style="margin-bottom:8px"><button class="shr-btn" data-act="inv-spin-clear">Remove 360°</button></div>' : "") +
+          '<div class="shr-drop" data-act="inv-spin-add" data-spindrop>' + (sp.length ? "Replace: drop" : "Drop") + " the item's spin photos or its whole folder here (or click to pick them). They're used in filename order and resized for the web.</div>";
         if (sch.booking) {
           out += '<div class="shr-h">Booked dates <button class="shr-btn" data-act="inv-book-add">+ Add</button></div>';
           out += (it.booked || []).map(function (b, k) { return '<div class="shr-book"><input type="date" data-book="' + k + '" data-bk="from" value="' + esc(b.from) + '"><input type="date" data-book="' + k + '" data-bk="to" value="' + esc(b.to) + '"><button class="shr-btn" data-act="inv-book-del" data-v="' + k + '">✕</button></div>'; }).join("") || '<p class="shr-muted">No bookings. Add dates here when someone books so others see it as taken.</p>';
@@ -1197,6 +1205,13 @@
     $$("[data-book]", form).forEach(function (inp) {
       inp.addEventListener("change", function () { cur.item.booked[Number(inp.getAttribute("data-book"))][inp.getAttribute("data-bk")] = inp.value; dataChanged(); });
     });
+    var sdz = $("[data-spindrop]", form);
+    sdz.addEventListener("dragover", function (e) { if (hasFiles(e)) { e.preventDefault(); sdz.classList.add("over"); } });
+    sdz.addEventListener("dragleave", function () { sdz.classList.remove("over"); });
+    sdz.addEventListener("drop", function (e) {
+      e.preventDefault(); e.stopPropagation(); sdz.classList.remove("over");
+      filesFromDrop(e).then(function (files) { addSpinFiles(cur.item, files); });
+    });
     var dz = $("[data-invdrop]", form);
     dz.addEventListener("dragover", function (e) { if (hasFiles(e) || hasMedia(e)) { e.preventDefault(); dz.classList.add("over"); } });
     dz.addEventListener("dragleave", function () { dz.classList.remove("over"); });
@@ -1205,6 +1220,66 @@
       if (hasMedia(e)) { addItemImage(cur.item, e.dataTransfer.getData("application/x-shr-media")); return; }
       addFiles(e.dataTransfer.files).then(function (srcs) { srcs.forEach(function (s) { addItemImage(cur.item, s, true); }); renderInventoryTab(); });
     });
+  }
+  /* ---- 360° spin frames ---- */
+  function filesFromDrop(e) {
+    var items = e.dataTransfer.items, entries = [];
+    if (items && items.length && items[0].webkitGetAsEntry) {
+      for (var i = 0; i < items.length; i++) { var en = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry(); if (en) entries.push(en); }
+    }
+    if (!entries.length) return Promise.resolve(Array.prototype.slice.call(e.dataTransfer.files || []));
+    var out = [];
+    function walk(en) {
+      if (en.isFile) return new Promise(function (res) { en.file(function (f) { out.push(f); res(); }, function () { res(); }); });
+      if (en.isDirectory) {
+        var reader = en.createReader();
+        return new Promise(function (res) {
+          var all = [];
+          (function read() { reader.readEntries(function (batch) { if (!batch.length) { Promise.all(all.map(walk)).then(res); } else { all = all.concat(Array.prototype.slice.call(batch)); read(); } }, function () { res(); }); })();
+        });
+      }
+      return Promise.resolve();
+    }
+    return Promise.all(entries.map(walk)).then(function () { return out; });
+  }
+  function resizeToJpeg(file, maxW) {
+    return createImageBitmap(file).then(function (bmp) {
+      var scale = Math.min(1, maxW / bmp.width), c = document.createElement("canvas");
+      c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+      c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+      if (bmp.close) bmp.close();
+      return new Promise(function (res, rej) { c.toBlob(function (b) { b ? res(b) : rej(new Error("encode failed")); }, "image/jpeg", 0.85); });
+    });
+  }
+  function addSpinFiles(item, files) {
+    files = Array.prototype.slice.call(files || []).filter(function (f) { return /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name) || /^image\//.test(f.type); });
+    if (!files.length) { toast("No photos found in what you dropped", true); return Promise.resolve(); }
+    if (!ED.dir) { toast("Connect your SkyHighRigs folder first (Media tab) so the spin photos can be saved", true, 5000); switchTab("media"); return Promise.resolve(); }
+    if (files.some(function (f) { return /\.hei[cf]$/i.test(f.name); })) { toast("Some photos are HEIC. Chrome can't read those: export them as JPG first (Photos → File → Export).", true, 8000); }
+    files = files.filter(function (f) { return !/\.hei[cf]$/i.test(f.name); });
+    if (files.length < 8) { toast("Only " + files.length + " photos. A smooth spin needs about 24 to 72.", true, 5000); }
+    files.sort(function (a, b) { return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }); });
+    var slug = (item.id || "item").replace(/[^a-z0-9-]/gi, "-");
+    var paths = [], done = 0;
+    return ED.dir.getDirectoryHandle("media", { create: true })
+      .then(function (m) { return m.getDirectoryHandle("360", { create: true }); })
+      .then(function (d) { return d.getDirectoryHandle(slug, { create: true }); })
+      .then(function (dir) {
+        return files.reduce(function (p, f, k) {
+          return p.then(function () { return resizeToJpeg(f, 1400); }).then(function (blob) {
+            var nm = ("00" + (k + 1)).slice(-3) + ".jpg";
+            return dir.getFileHandle(nm, { create: true }).then(function (fh) { return fh.createWritable(); })
+              .then(function (w) { return w.write(blob).then(function () { return w.close(); }); })
+              .then(function () { paths.push("media/360/" + slug + "/" + nm); done++; setStatus("360°: " + done + "/" + files.length + " photos…"); });
+          });
+        }, Promise.resolve());
+      })
+      .then(function () {
+        item.spin = paths; dataChanged(); setStatus();
+        toast("360° spin ready for " + item.name + " (" + paths.length + " frames). Save to keep it.");
+        renderInventoryTab();
+      })
+      .catch(function (err) { setStatus(); toast("360° import stopped: " + err.message, true, 6000); });
   }
   function addItemImage(item, src, quiet) {
     item.images = item.images || [];
@@ -1233,6 +1308,8 @@
       case "inv-img-del": if (cur) { cur.item.images.splice(Number(v), 1); dataChanged(); } break;
       case "inv-img-add": if (cur) { var item = cur.item, i = document.createElement("input"); i.type = "file"; i.accept = "image/*"; i.multiple = true; i.onchange = function () { addFiles(i.files).then(function (srcs) { srcs.forEach(function (s) { addItemImage(item, s, true); }); renderInventoryTab(); }); }; i.click(); } return true;
       case "inv-book-add": if (cur) { cur.item.booked = cur.item.booked || []; var t = new Date().toISOString().slice(0, 10); cur.item.booked.push({ from: t, to: t }); dataChanged(); } break;
+      case "inv-spin-add": if (cur) { var sitem = cur.item, si = document.createElement("input"); si.type = "file"; si.accept = "image/*"; si.multiple = true; si.onchange = function () { addSpinFiles(sitem, si.files); }; si.click(); } return true;
+      case "inv-spin-clear": if (cur && confirm("Remove the 360° spin from this item? (The photos stay in media/360.)")) { cur.item.spin = []; dataChanged(); } break;
       case "inv-book-del": if (cur) { cur.item.booked.splice(Number(v), 1); dataChanged(); } break;
       default: return false;
     }
