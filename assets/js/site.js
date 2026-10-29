@@ -163,10 +163,62 @@
     var nb = nextBooking(item);
     return nb ? '<span class="badge ok">Available · booked ' + fmtDate(nb.from) + "–" + fmtDate(nb.to) + "</span>" : '<span class="badge ok">Available</span>';
   }
+  function hasSpin(item) { return !!(item.spin && item.spin.length > 1); }
   function imgSlot(item, cls) {
-    var src = item.images && item.images[0];
-    return '<div class="media-slot ' + cls + '" data-item-id="' + esc(item.id) + '" data-view="' + esc(item.id) + '">' + (src ? '<img src="' + esc(src) + '" alt="' + esc(item.name) + '" loading="lazy">' : "") + "</div>";
+    var spin = hasSpin(item);
+    var src = (item.images && item.images[0]) || (spin && item.spin[0]);
+    return '<div class="media-slot ' + cls + '" data-item-id="' + esc(item.id) + '" data-view="' + esc(item.id) + '"' + (spin ? ' data-spin-hover="' + esc(item.id) + '"' : "") + ">" +
+      (src ? '<img src="' + esc(src) + '" alt="' + esc(item.name) + '" loading="lazy">' : "") +
+      (spin ? '<span class="spin-badge">360°</span>' : "") + "</div>";
   }
+
+  /* ---------------- 360° spin viewer ----------------
+     item.spin = list of photos taken while turning the item (in order).
+     Drag / swipe to rotate. Cards scrub through frames on mouse hover. */
+  var spinCache = {};
+  function preload(item) {
+    if (spinCache[item.id]) return;
+    spinCache[item.id] = item.spin.map(function (src) { var im = new Image(); im.decoding = "async"; im.src = src; return im; });
+  }
+  function mountSpin(el, item) {
+    var frames = item.spin, n = frames.length, i = 0, auto = true, dragging = false, sx = 0, si = 0;
+    var img = el.querySelector("img");
+    preload(item);
+    function show(k) { i = ((k % n) + n) % n; img.src = frames[i]; }
+    var timer = setInterval(function () {
+      if (!document.body.contains(el)) { clearInterval(timer); return; }
+      if (auto && !dragging) show(i + 1);
+    }, 110);
+    el.addEventListener("pointerdown", function (e) { dragging = true; auto = false; sx = e.clientX; si = i; el.classList.add("is-drag"); try { el.setPointerCapture(e.pointerId); } catch (x) {} });
+    el.addEventListener("pointermove", function (e) {
+      if (!dragging) return;
+      var step = Math.max(3, (el.clientWidth || 400) / n);
+      show(si - Math.round((e.clientX - sx) / step));
+    });
+    function up() { dragging = false; el.classList.remove("is-drag"); }
+    el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+    el.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowLeft") { auto = false; show(i - 1); e.preventDefault(); }
+      if (e.key === "ArrowRight") { auto = false; show(i + 1); e.preventDefault(); }
+    });
+  }
+  document.addEventListener("pointermove", function (e) {
+    if (e.pointerType !== "mouse") return;
+    var el = e.target.closest && e.target.closest("[data-spin-hover]");
+    if (!el) return;
+    var it = findAny(el.getAttribute("data-spin-hover"));
+    if (!it || !hasSpin(it)) return;
+    preload(it);
+    var r = el.getBoundingClientRect(), f = Math.min(0.999, Math.max(0, (e.clientX - r.left) / r.width));
+    var img = el.querySelector("img"), src = it.spin[Math.floor(f * it.spin.length)];
+    if (img && img.getAttribute("src") !== src) img.setAttribute("src", src);
+  });
+  document.addEventListener("pointerout", function (e) {
+    var el = e.target.closest && e.target.closest("[data-spin-hover]");
+    if (!el || el.contains(e.relatedTarget)) return;
+    var it = findAny(el.getAttribute("data-spin-hover")), img = el.querySelector("img");
+    if (it && img) img.setAttribute("src", (it.images && it.images[0]) || it.spin[0]);
+  });
 
   function stepContainer(gridOnly) {
     var list = SHR.data.containers, h = heightIn(), w = Number(S.fit.weight), f = S.cf;
@@ -339,12 +391,19 @@
     r("Notes", it.notes);
     var bk = (it.booked || []).map(function (b) { return fmtDate(b.from) + "–" + fmtDate(b.to); }).join(", ");
     if (bk) r("Booked", bk);
-    var html = '<div class="detail"><div><div class="media-slot" id="detail-main">' + (imgs[0] ? '<img src="' + esc(imgs[0]) + '" alt="">' : "") + "</div>" +
-      (imgs.length > 1 ? '<div class="thumbs">' + imgs.map(function (s, i) { return '<img src="' + esc(s) + '" data-thumb="' + esc(s) + '" class="' + (i ? "" : "is-on") + '" alt="">'; }).join("") + "</div>" : "") + "</div>" +
+    var spin = hasSpin(it);
+    var mainHTML = spin
+      ? '<div class="spin" id="detail-spin" tabindex="0" aria-label="360 degree view, drag to rotate"><img src="' + esc(it.spin[0]) + '" alt="' + esc(it.name) + '" draggable="false"><span class="spin-hint">⟲ Drag to rotate · 360°</span></div>'
+      : '<div class="media-slot" id="detail-main">' + (imgs[0] ? '<img src="' + esc(imgs[0]) + '" alt="">' : "") + "</div>";
+    var thumbList = (spin ? ['<button type="button" class="thumb-360 is-on" data-show-spin="' + esc(it.id) + '">360°</button>'] : [])
+      .concat(imgs.map(function (s, i) { return '<img src="' + esc(s) + '" data-thumb="' + esc(s) + '" class="' + (i || spin ? "" : "is-on") + '" alt="">'; }));
+    var html = '<div class="detail"><div><div id="detail-stage">' + mainHTML + "</div>" +
+      (thumbList.length > 1 ? '<div class="thumbs">' + thumbList.join("") + "</div>" : "") + "</div>" +
       '<div><h3 style="font-size:2rem">' + esc(it.name) + "</h3>" + '<ul class="item-specs">' + rows.join("") + "</ul>" +
       '<div class="item-prices" style="margin:14px 0">' + (it.rentDay ? '<span class="rent">' + money(it.rentDay) + "<small>/day</small></span>" : "<span></span>") + (it.buyPrice ? '<span class="buy">Buy ' + money(it.buyPrice) + "</span>" : "") + "</div>" +
       '<div class="item-actions">' + (it.buyPrice ? '<button type="button" class="btn btn-ghost" data-buy="' + esc(it.id) + '">Ask to buy</button>' : "") + '<button type="button" class="btn btn-dark" data-close data-goto-rent>Rent it</button></div></div></div>';
     openModal(html, true);
+    if (spin) mountSpin(document.getElementById("detail-spin"), it);
   }
 
   function rigSummaryText() {
@@ -441,7 +500,12 @@
     if ((el = t.closest("[data-request-rig]"))) { openRequest("rig", "", rigSummaryText()); return; }
     if ((el = t.closest("[data-sale-tab]"))) { saleTab = el.getAttribute("data-sale-tab"); renderSale(); return; }
     if ((el = t.closest("[data-buy]"))) { var it = findAny(el.getAttribute("data-buy")); openRequest("buy", it ? it.name : "", it ? it.name + " · " + money(it.buyPrice) : ""); return; }
-    if ((el = t.closest("[data-thumb]"))) { var main = $("#detail-main"); main.innerHTML = '<img src="' + esc(el.getAttribute("data-thumb")) + '" alt="">'; $$(".thumbs img").forEach(function (i) { i.classList.toggle("is-on", i === el); }); return; }
+    if ((el = t.closest("[data-thumb]"))) { var stage = $("#detail-stage"); stage.innerHTML = '<div class="media-slot" id="detail-main"><img src="' + esc(el.getAttribute("data-thumb")) + '" alt=""></div>'; $$(".thumbs > *").forEach(function (i) { i.classList.toggle("is-on", i === el); }); return; }
+    if ((el = t.closest("[data-show-spin]"))) {
+      var sit = findAny(el.getAttribute("data-show-spin")), st = $("#detail-stage");
+      if (sit && st) { st.innerHTML = '<div class="spin" id="detail-spin" tabindex="0"><img src="' + esc(sit.spin[0]) + '" alt="" draggable="false"><span class="spin-hint">⟲ Drag to rotate · 360°</span></div>'; mountSpin($("#detail-spin"), sit); }
+      $$(".thumbs > *").forEach(function (i) { i.classList.toggle("is-on", i === el); }); return;
+    }
     if ((el = t.closest("[data-view]"))) { if (!editing()) openDetails(el.getAttribute("data-view")); return; }
     if (editing()) return; // the rest are navigation/requests the editor shouldn't trigger
     if ((el = t.closest("[data-request]"))) { e.preventDefault(); openRequest(el.getAttribute("data-request"), el.getAttribute("data-item") || ""); return; }
